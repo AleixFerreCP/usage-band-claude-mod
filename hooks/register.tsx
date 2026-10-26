@@ -16,6 +16,17 @@ const toUsage = (previous: Usage | null, context: SessionContextUsage, rateLimit
       : (previous?.limits ?? []),
 })
 
+// Kept across sessions, so a new one shows the limits before its first response reports them.
+const limitsKey = 'limits'
+
+// A window whose reset has passed is back at zero, with its next reset unknown.
+const restoreLimits = (stored: unknown, now: number): Usage['limits'] =>
+  Array.isArray(stored)
+    ? stored.map(({ kind, percentUsed, resetsAt }) =>
+        resetsAt && Date.parse(resetsAt) <= now ? { kind, percentUsed: 0 } : { kind, percentUsed, resetsAt },
+      )
+    : []
+
 const colorFor = (percent: number) => (percent >= 85 ? 'error' : percent >= 60 ? 'warning' : 'success')
 
 const fills = { success: '#4caf50', warning: '#e0a030', error: '#e5534b' }
@@ -43,7 +54,10 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
     const { context, rateLimits } = await $.session.usage()
-    await update($, usage, previous => toUsage(previous, context, rateLimits))
+    const stored = rateLimits.length > 0 ? [] : restoreLimits(await $.store.get(limitsKey), await $.clock.now())
+    await update($, usage, previous =>
+      toUsage(previous ?? { contextPercent: null, limits: stored }, context, rateLimits),
+    )
 
     return result
   })
@@ -57,6 +71,9 @@ export const register: Register = on => {
 
   on('session.measure', async ($, e, next) => {
     await update($, usage, previous => toUsage(previous, e.context, e.rateLimits))
+    if (e.changed.includes('rateLimits') && e.rateLimits.length > 0) {
+      await $.store.set(limitsKey, toUsage(null, e.context, e.rateLimits).limits)
+    }
 
     return next(e)
   })
