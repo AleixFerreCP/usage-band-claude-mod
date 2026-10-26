@@ -17,5 +17,3 @@ claude plugin install usage-band --marketplace AleixFerreCP/usage-band-claude-mo
 ```
 
 In the desktop app, where `/plugin` does not run: click + next to the prompt box, then Plugins, Add marketplace with `AleixFerreCP/usage-band-claude-mod`, then Add plugin.
-
-This repository is private: the install works only for GitHub accounts that can read it, on a machine that already holds a git credential for github.com (an SSH key, or `gh auth login` then `gh auth setup-git`).
