@@ -4,21 +4,29 @@ import type { Register, SessionContextUsage, SessionRateLimit } from 'claude-cod
 import type { Usage } from '../types'
 
 const usage = atom({ plugin: 'usage-band', key: 'usage' } as const, null)
+// The figures as they stood when the last prompt was sent: the bars mark what that task spent.
+const baseline = atom({ plugin: 'usage-band', key: 'baseline' } as const, null)
 
-const toUsage = (context: SessionContextUsage, rateLimits: SessionRateLimit[]): Usage => ({
-  contextPercent: context.percent ?? null,
-  limits: rateLimits.map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt })),
+// A reading with no rate limits (a reload, before the next response reports them) keeps the last ones.
+const toUsage = (previous: Usage | null, context: SessionContextUsage, rateLimits: SessionRateLimit[]): Usage => ({
+  contextPercent: context.percent ?? previous?.contextPercent ?? null,
+  limits:
+    rateLimits.length > 0
+      ? rateLimits.map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt }))
+      : (previous?.limits ?? []),
 })
 
 const colorFor = (percent: number) => (percent >= 85 ? 'error' : percent >= 60 ? 'warning' : 'success')
 
 const fills = { success: '#4caf50', warning: '#e0a030', error: '#e5534b' }
+const spentFill = '#58a6ff'
 
 // Stretched to the slot's width, so the viewBox is in percent and the aspect is free.
-const barSvg = (percent: number) =>
+const barSvg = (percent: number, from: number) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="4000" height="6" viewBox="0 0 100 6" preserveAspectRatio="none">` +
   `<rect width="100" height="6" rx="0.6" fill="#8884"/>` +
   `<rect width="${percent}" height="6" rx="0.6" fill="${fills[colorFor(percent)]}"/>` +
+  (percent > from ? `<rect x="${from}" width="${percent - from}" height="6" fill="${spentFill}"/>` : '') +
   `</svg>`
 
 const resetLabel = (resetsAt?: string) => {
@@ -35,19 +43,27 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
     const { context, rateLimits } = await $.session.usage()
-    await update($, usage, () => toUsage(context, rateLimits))
+    await update($, usage, previous => toUsage(previous, context, rateLimits))
 
     return result
   })
 
+  on('prompt.submit', async ($, e, next) => {
+    const current = await read($, usage)
+    await update($, baseline, () => current)
+
+    return next(e)
+  })
+
   on('session.measure', async ($, e, next) => {
-    await update($, usage, () => toUsage(e.context, e.rateLimits))
+    await update($, usage, previous => toUsage(previous, e.context, e.rateLimits))
 
     return next(e)
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const current = await read($, usage)
+    const before = await read($, baseline)
 
     if (e.props.hasSurvey || current === null) {
       return next(e)
@@ -59,14 +75,18 @@ export const register: Register = on => {
     const isTerminal = e.surface === 'terminal'
 
     // A filled track: solid boxes on the webview surfaces, cell glyphs in the terminal.
-    const Meter = ({ percent, cells }: { percent: number; cells: number }) => {
+    // The part since `from` is drawn in the spent colour.
+    const Meter = ({ percent, from, cells }: { percent: number; from: number; cells: number }) => {
       const clamped = Math.max(0, Math.min(percent, 100))
+      const start = Math.max(0, Math.min(from, clamped))
 
       if (!Svg) {
         const filled = Math.round((cells * clamped) / 100)
+        const kept = Math.round((cells * start) / 100)
         return (
           <Text>
-            <Text color={colorFor(percent)}>{'━'.repeat(filled)}</Text>
+            <Text color={colorFor(percent)}>{'━'.repeat(kept)}</Text>
+            <Text color="suggestion">{'━'.repeat(filled - kept)}</Text>
             <Text dimColor>{'━'.repeat(cells - filled)}</Text>
           </Text>
         )
@@ -74,18 +94,35 @@ export const register: Register = on => {
 
       return (
         <Svg
-          source={barSvg(clamped)}
-          alt={`${Math.round(clamped)}% used`}
+          source={barSvg(clamped, start)}
+          alt={`${Math.round(clamped)}% used, ${Math.round(clamped - start)}% by the last task`}
           height={6}
         />
       )
     }
 
+    // A figure that dropped (a compaction, a window that reset) counts as nothing spent.
+    const spentSince = (now: number, then: number | undefined) =>
+      then === undefined || now < then ? 0 : Math.round((now - then) * 10) / 10
+
+    const Figure = ({ percent, spent }: { percent: number | null; spent: number }) => (
+      <Text size="caption" tabular>
+        {spent > 0 && <Text color="suggestion">+{spent}% </Text>}
+        <Text weight="semibold" color={percent === null ? undefined : colorFor(percent)}>
+          {percent === null ? '–' : `${percent}%`}
+        </Text>
+      </Text>
+    )
+
     const contextPercent = current.contextPercent
+    const contextSpent =
+      contextPercent === null ? 0 : spentSince(contextPercent, before?.contextPercent ?? undefined)
     const half = Math.max(10, Math.floor((e.props.bodyColumns - 4) / 2))
 
     const limit = (kind: string, title: string) => {
       const found = current.limits.find(l => l.kind === kind)
+      const was = before?.limits.find(l => l.kind === kind)?.percentUsed
+      const spent = found ? spentSince(found.percentUsed, was) : 0
       const resets = resetLabel(found?.resetsAt)
 
       return (
@@ -94,11 +131,9 @@ export const register: Register = on => {
             <Text size="caption" weight="medium" dimColor>
               {title}
             </Text>
-            <Text size="caption" weight="semibold" tabular color={found ? colorFor(found.percentUsed) : undefined}>
-              {found ? `${found.percentUsed}%` : '–'}
-            </Text>
+            <Figure percent={found?.percentUsed ?? null} spent={spent} />
           </Box>
-          <Meter percent={found?.percentUsed ?? 0} cells={half} />
+          <Meter percent={found?.percentUsed ?? 0} from={(found?.percentUsed ?? 0) - spent} cells={half} />
           {resets && (
             <Text size="footnote" dimColor>
               {resets}
@@ -115,11 +150,9 @@ export const register: Register = on => {
             <Text size="caption" weight="medium" dimColor>
               Context
             </Text>
-            <Text size="caption" weight="semibold" tabular color={contextPercent === null ? undefined : colorFor(contextPercent)}>
-              {contextPercent === null ? '–' : `${contextPercent}%`}
-            </Text>
+            <Figure percent={contextPercent} spent={contextSpent} />
           </Box>
-          <Meter percent={contextPercent ?? 0} cells={e.props.bodyColumns} />
+          <Meter percent={contextPercent ?? 0} from={(contextPercent ?? 0) - contextSpent} cells={e.props.bodyColumns} />
         </Box>
         <Box flexDirection="row" flexWrap="nowrap" width="100%" gap={isTerminal ? 4 : "lg"}>
           {limit('five_hour', 'Session (5hr)')}
