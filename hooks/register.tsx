@@ -61,6 +61,20 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // session.measure only fires once a turn ends; each response mid-turn refreshes the bars too.
+  on('turn.step', async function* ($, e, next) {
+    const result = yield* next(e)
+
+    try {
+      const { context, rateLimits } = await $.session.usage()
+      await update($, usage, previous => toUsage(previous, context, rateLimits))
+    } catch {
+      // A failed reading keeps the last bars; the turn goes on.
+    }
+
+    return result
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const current = await read($, usage)
     const before = await read($, baseline)
