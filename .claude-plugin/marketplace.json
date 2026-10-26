@@ -1,0 +1,5 @@
+{
+  "name": "usage-band-claude-mod",
+  "owner": { "name": "Aleix Ferré" },
+  "plugins": [{ "name": "usage-band", "source": "./" }]
+}

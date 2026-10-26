@@ -1,0 +1,6 @@
+{
+  "name": "usage-band",
+  "version": "0.1.0",
+  "description": "Band above the prompt: context fill bar plus 5-hour and weekly limits",
+  "types": "./types/index.d.ts"
+}
