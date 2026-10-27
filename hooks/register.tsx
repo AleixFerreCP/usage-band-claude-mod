@@ -7,9 +7,15 @@ const usage = atom({ plugin: 'usage-band', key: 'usage' } as const, null)
 // The figures as they stood when the last prompt was sent: the bars mark what that task spent.
 const baseline = atom({ plugin: 'usage-band', key: 'baseline' } as const, null)
 
+// `percent` is whole; the tokens give it to one decimal.
+const contextPercentOf = (context: SessionContextUsage) =>
+  context.tokens !== undefined && context.window > 0
+    ? Math.round((context.tokens / context.window) * 1000) / 10
+    : context.percent
+
 // A reading with no rate limits (a reload, before the next response reports them) keeps the last ones.
 const toUsage = (previous: Usage | null, context: SessionContextUsage, rateLimits: SessionRateLimit[]): Usage => ({
-  contextPercent: context.percent ?? previous?.contextPercent ?? null,
+  contextPercent: contextPercentOf(context) ?? previous?.contextPercent ?? null,
   limits:
     rateLimits.length > 0
       ? rateLimits.map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt }))
@@ -26,6 +32,9 @@ const restoreLimits = (stored: unknown, now: number): Usage['limits'] =>
         resetsAt && Date.parse(resetsAt) <= now ? { kind, percentUsed: 0 } : { kind, percentUsed, resetsAt },
       )
     : []
+
+// One decimal, dropped when it is 0: 23.5, or 7.
+const formatPercent = (percent: number) => `${Math.round(percent * 10) / 10}%`
 
 const colorFor = (percent: number) => (percent >= 85 ? 'error' : percent >= 60 ? 'warning' : 'success')
 
@@ -126,7 +135,7 @@ export const register: Register = on => {
       return (
         <Svg
           source={barSvg(clamped, start)}
-          alt={`${Math.round(clamped)}% used, ${Math.round(clamped - start)}% by the last task`}
+          alt={`${formatPercent(clamped)} used, ${formatPercent(clamped - start)} by the last task`}
           height={6}
         />
       )
@@ -138,9 +147,9 @@ export const register: Register = on => {
 
     const Figure = ({ percent, spent }: { percent: number | null; spent: number }) => (
       <Text size="caption" tabular>
-        {spent > 0 && <Text color="suggestion">+{spent}% </Text>}
+        {spent > 0 && <Text color="suggestion">+{formatPercent(spent)} </Text>}
         <Text weight="semibold" color={percent === null ? undefined : colorFor(percent)}>
-          {percent === null ? '–' : `${percent}%`}
+          {percent === null ? '–' : formatPercent(percent)}
         </Text>
       </Text>
     )
